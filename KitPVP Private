@@ -1,0 +1,616 @@
+-- KIT PVP | Delta + Mobile Compatible
+-- Toggle GUI: RightShift (PC) | On-screen button (Mobile)
+-- Host this file raw. Execute via loadstring.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+-- ============================================================
+-- CONFIG
+-- ============================================================
+local Config = {
+    AimAssist = {
+        Enabled = true,
+        FOV = 120,
+        Smoothness = 0.25,
+        TargetPart = "Head",
+        TeamCheck = true,
+        VisibleCheck = false,
+    },
+    SilentAura = {
+        Enabled = true,
+        Radius = 10,
+        TeamCheck = true,
+        HitChance = 100,
+    },
+    ESP = {
+        Enabled = true,
+        Boxes = true,
+        Names = true,
+        Distance = true,
+        Health = true,
+        TracerOrigin = "Bottom",
+        MaxDistance = 1000,
+        BoxColor = Color3.fromRGB(255, 255, 255),
+        TracerColor = Color3.fromRGB(255, 255, 255),
+        TextColor = Color3.fromRGB(255, 255, 255),
+    },
+    Tracers = {
+        Enabled = true,
+        Thickness = 1,
+    },
+    Visuals = {
+        CrosshairEnabled = true,
+        CrosshairColor = Color3.fromRGB(255, 255, 255),
+        CrosshairSize = 10,
+        FOVCircle = true,
+        FOVColor = Color3.fromRGB(255, 255, 255),
+    },
+    MobileAim = {
+        AutoAimOnTouch = true,  -- Aim assist fires on touch, no button hold needed
+    },
+}
+
+-- ============================================================
+-- UTILITY
+-- ============================================================
+local function getChar(p) return p.Character end
+local function getRoot(p) local c=getChar(p) return c and c:FindFirstChild("HumanoidRootPart") end
+local function getHum(p)  local c=getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
+local function isAlive(p) local h=getHum(p) return h and h.Health > 0 end
+local function isTeammate(p) return p.Team == LocalPlayer.Team end
+
+local function toScreen(pos)
+    local s, on = Camera:WorldToViewportPoint(pos)
+    return Vector2.new(s.X, s.Y), on, s.Z
+end
+
+local function getClosest(fov)
+    local best, bestDist = nil, fov
+    local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LocalPlayer then continue end
+        if Config.AimAssist.TeamCheck and isTeammate(p) then continue end
+        if not isAlive(p) then continue end
+        local part = p.Character and p.Character:FindFirstChild(Config.AimAssist.TargetPart)
+        if not part then continue end
+        local sp, on = toScreen(part.Position)
+        if not on then continue end
+        local d = (center - sp).Magnitude
+        if d < bestDist then bestDist = d best = p end
+    end
+    return best
+end
+
+-- ============================================================
+-- ESP
+-- ============================================================
+local ESPObjects = {}
+
+local function newDraw(type, props)
+    local o = Drawing.new(type)
+    for k,v in pairs(props) do o[k]=v end
+    return o
+end
+
+local function createESP(player)
+    ESPObjects[player] = {
+        Box      = newDraw("Square", {Visible=false,Thickness=1,Color=Config.ESP.BoxColor,Filled=false}),
+        Name     = newDraw("Text",   {Visible=false,Size=13,Color=Config.ESP.TextColor,Center=true,Outline=true,OutlineColor=Color3.fromRGB(0,0,0)}),
+        Health   = newDraw("Text",   {Visible=false,Size=12,Color=Color3.fromRGB(100,255,100),Center=true,Outline=true,OutlineColor=Color3.fromRGB(0,0,0)}),
+        Distance = newDraw("Text",   {Visible=false,Size=11,Color=Config.ESP.TextColor,Center=true,Outline=true,OutlineColor=Color3.fromRGB(0,0,0)}),
+        Tracer   = newDraw("Line",   {Visible=false,Thickness=Config.Tracers.Thickness,Color=Config.ESP.TracerColor}),
+    }
+end
+
+local function removeESP(player)
+    if ESPObjects[player] then
+        for _,o in pairs(ESPObjects[player]) do o:Remove() end
+        ESPObjects[player] = nil
+    end
+end
+
+local function updateESP()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local esp = ESPObjects[player]
+        if not esp then continue end
+
+        local char = getChar(player)
+        local root = getRoot(player)
+        local hum  = getHum(player)
+
+        if not char or not root or not hum or hum.Health <= 0
+        or (Config.ESP.TeamCheck and isTeammate(player)) then
+            for _,o in pairs(esp) do o.Visible = false end
+            continue
+        end
+
+        local dist = (Camera.CFrame.Position - root.Position).Magnitude
+        if dist > Config.ESP.MaxDistance then
+            for _,o in pairs(esp) do o.Visible = false end
+            continue
+        end
+
+        local minX,minY,maxX,maxY = math.huge,math.huge,-math.huge,-math.huge
+        local hits = 0
+
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                local corners = {
+                    part.CFrame * CFrame.new( part.Size.X/2,  part.Size.Y/2,  part.Size.Z/2),
+                    part.CFrame * CFrame.new(-part.Size.X/2,  part.Size.Y/2, -part.Size.Z/2),
+                    part.CFrame * CFrame.new( part.Size.X/2, -part.Size.Y/2,  part.Size.Z/2),
+                    part.CFrame * CFrame.new(-part.Size.X/2, -part.Size.Y/2, -part.Size.Z/2),
+                }
+                for _, c in ipairs(corners) do
+                    local sp, on = toScreen(c.Position)
+                    if on then
+                        hits = hits + 1
+                        minX=math.min(minX,sp.X) minY=math.min(minY,sp.Y)
+                        maxX=math.max(maxX,sp.X) maxY=math.max(maxY,sp.Y)
+                    end
+                end
+            end
+        end
+
+        if hits == 0 then
+            for _,o in pairs(esp) do o.Visible = false end
+            continue
+        end
+
+        local bW = maxX - minX
+        local bH = maxY - minY
+
+        esp.Box.Visible      = Config.ESP.Boxes
+        esp.Box.Position     = Vector2.new(minX, minY)
+        esp.Box.Size         = Vector2.new(bW, bH)
+
+        esp.Name.Visible     = Config.ESP.Names
+        esp.Name.Position    = Vector2.new(minX + bW/2, minY - 16)
+        esp.Name.Text        = player.Name
+
+        esp.Health.Visible   = Config.ESP.Health
+        esp.Health.Position  = Vector2.new(minX + bW/2, minY + bH + 2)
+        esp.Health.Text      = math.floor(hum.Health).."/"..math.floor(hum.MaxHealth).." HP"
+
+        esp.Distance.Visible = Config.ESP.Distance
+        esp.Distance.Position= Vector2.new(minX + bW/2, minY + bH + 14)
+        esp.Distance.Text    = math.floor(dist).." studs"
+
+        if Config.Tracers.Enabled then
+            local origin = Config.ESP.TracerOrigin == "Bottom"
+                and Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
+                or  Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+            local tp, on = toScreen(root.Position)
+            esp.Tracer.Visible = on
+            esp.Tracer.From    = origin
+            esp.Tracer.To      = tp
+        else
+            esp.Tracer.Visible = false
+        end
+    end
+end
+
+-- ============================================================
+-- AIM ASSIST
+-- ============================================================
+local touchActive = false
+
+local function runAimAssist()
+    if not Config.AimAssist.Enabled then return end
+
+    local fire = false
+    if IsMobile then
+        fire = Config.MobileAim.AutoAimOnTouch and touchActive
+    else
+        fire = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+            or UserInputService:IsKeyDown(Enum.KeyCode.Q)
+    end
+    if not fire then return end
+
+    local target = getClosest(Config.AimAssist.FOV)
+    if not target then return end
+    local part = target.Character and target.Character:FindFirstChild(Config.AimAssist.TargetPart)
+    if not part then return end
+    local sp, on = toScreen(part.Position)
+    if not on then return end
+
+    local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    local delta  = sp - center
+    mousemoverel(
+        delta.X * (1 - Config.AimAssist.Smoothness),
+        delta.Y * (1 - Config.AimAssist.Smoothness)
+    )
+end
+
+-- Track touch state for mobile aim trigger
+UserInputService.TouchStarted:Connect(function() touchActive = true  end)
+UserInputService.TouchEnded:Connect(function()   touchActive = false end)
+
+-- ============================================================
+-- SILENT AURA
+-- ============================================================
+local function runSilentAura()
+    if not Config.SilentAura.Enabled then return end
+    local root = getRoot(LocalPlayer)
+    if not root then return end
+    local tool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
+    if not tool then return end
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LocalPlayer then continue end
+        if Config.SilentAura.TeamCheck and isTeammate(p) then continue end
+        if not isAlive(p) then continue end
+        local er = getRoot(p)
+        if not er then continue end
+        if (root.Position - er.Position).Magnitude <= Config.SilentAura.Radius then
+            if math.random(1,100) <= Config.SilentAura.HitChance then
+                pcall(function()
+                    local re = tool:FindFirstChildOfClass("RemoteEvent")
+                    if re then re:FireServer(er) end
+                end)
+            end
+        end
+    end
+end
+
+-- ============================================================
+-- CROSSHAIR + FOV CIRCLE
+-- ============================================================
+local CH = {
+    L = newDraw("Line",{Visible=false,Thickness=1,Color=Config.Visuals.CrosshairColor}),
+    R = newDraw("Line",{Visible=false,Thickness=1,Color=Config.Visuals.CrosshairColor}),
+    U = newDraw("Line",{Visible=false,Thickness=1,Color=Config.Visuals.CrosshairColor}),
+    D = newDraw("Line",{Visible=false,Thickness=1,Color=Config.Visuals.CrosshairColor}),
+}
+local FOVC = newDraw("Circle",{Visible=false,Thickness=1,Color=Config.Visuals.FOVColor,Filled=false,NumSides=64})
+
+local function updateVisuals()
+    local c  = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    local s  = Config.Visuals.CrosshairSize
+    local on = Config.Visuals.CrosshairEnabled
+    CH.L.From=c-Vector2.new(s,0) CH.L.To=c-Vector2.new(3,0) CH.L.Visible=on
+    CH.R.From=c+Vector2.new(3,0) CH.R.To=c+Vector2.new(s,0) CH.R.Visible=on
+    CH.U.From=c-Vector2.new(0,s) CH.U.To=c-Vector2.new(0,3) CH.U.Visible=on
+    CH.D.From=c+Vector2.new(0,3) CH.D.To=c+Vector2.new(0,s) CH.D.Visible=on
+    FOVC.Position = c
+    FOVC.Radius   = Config.AimAssist.FOV
+    FOVC.Visible  = Config.Visuals.FOVCircle and Config.AimAssist.Enabled
+end
+
+-- ============================================================
+-- GUI — Black & White, Mobile-Scaled
+-- ============================================================
+local SCALE   = IsMobile and 1.35 or 1.0
+local W       = math.floor(300 * SCALE)
+local H       = math.floor(460 * SCALE)
+local FSIZE_L = math.floor(13 * SCALE)
+local FSIZE_S = math.floor(11 * SCALE)
+local ROW_H   = math.floor(36 * SCALE)
+
+local GUI = Instance.new("ScreenGui")
+GUI.Name = "KitPVP"
+GUI.ResetOnSpawn = false
+GUI.IgnoreGuiInset = true
+pcall(function() GUI.Parent = game:GetService("CoreGui") end)
+
+local Main = Instance.new("Frame")
+Main.Size = UDim2.new(0, W, 0, H)
+Main.Position = UDim2.new(0, 20, 0, 60)
+Main.BackgroundColor3 = Color3.fromRGB(10,10,10)
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Draggable = not IsMobile   -- mobile drag handled below
+Main.Parent = GUI
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0,8)
+
+-- Mobile drag
+if IsMobile then
+    local dragging, dragStart, startPos = false, nil, nil
+    Main.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then
+            dragging  = true
+            dragStart = input.Position
+            startPos  = Main.Position
+        end
+    end)
+    Main.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Position - dragStart
+            Main.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+    Main.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+end
+
+-- Title bar
+local TBar = Instance.new("Frame")
+TBar.Size = UDim2.new(1,0,0,math.floor(38*SCALE))
+TBar.BackgroundColor3 = Color3.fromRGB(20,20,20)
+TBar.BorderSizePixel = 0
+TBar.Parent = Main
+Instance.new("UICorner",TBar).CornerRadius = UDim.new(0,8)
+
+local TLabel = Instance.new("TextLabel")
+TLabel.Size = UDim2.new(0.8,0,1,0)
+TLabel.Position = UDim2.new(0,12,0,0)
+TLabel.BackgroundTransparency = 1
+TLabel.Text = "KIT PVP  •  DELTA"
+TLabel.TextColor3 = Color3.fromRGB(255,255,255)
+TLabel.Font = Enum.Font.GothamBold
+TLabel.TextSize = FSIZE_L
+TLabel.TextXAlignment = Enum.TextXAlignment.Left
+TLabel.Parent = TBar
+
+-- Minimize button
+local MinBtn = Instance.new("TextButton")
+MinBtn.Size = UDim2.new(0, math.floor(28*SCALE), 0, math.floor(28*SCALE))
+MinBtn.Position = UDim2.new(1, -math.floor(36*SCALE), 0.5, -math.floor(14*SCALE))
+MinBtn.BackgroundColor3 = Color3.fromRGB(40,40,40)
+MinBtn.Text = "—"
+MinBtn.TextColor3 = Color3.fromRGB(255,255,255)
+MinBtn.Font = Enum.Font.GothamBold
+MinBtn.TextSize = FSIZE_S
+MinBtn.BorderSizePixel = 0
+MinBtn.Parent = TBar
+Instance.new("UICorner",MinBtn).CornerRadius = UDim.new(0,4)
+
+local Scroll = Instance.new("ScrollingFrame")
+Scroll.Size = UDim2.new(1,-8,1,-math.floor(48*SCALE))
+Scroll.Position = UDim2.new(0,4,0,math.floor(44*SCALE))
+Scroll.BackgroundTransparency = 1
+Scroll.BorderSizePixel = 0
+Scroll.ScrollBarThickness = 3
+Scroll.ScrollBarImageColor3 = Color3.fromRGB(255,255,255)
+Scroll.ScrollingEnabled = true
+Scroll.Parent = Main
+
+local Layout = Instance.new("UIListLayout")
+Layout.SortOrder = Enum.SortOrder.LayoutOrder
+Layout.Padding = UDim.new(0,5)
+Layout.Parent = Scroll
+
+Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    Scroll.CanvasSize = UDim2.new(0,0,0,Layout.AbsoluteContentSize.Y+10)
+end)
+
+-- Minimize toggle
+local minimized = false
+MinBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    Scroll.Visible = not minimized
+    Main.Size = minimized
+        and UDim2.new(0,W,0,math.floor(42*SCALE))
+        or  UDim2.new(0,W,0,H)
+    MinBtn.Text = minimized and "+" or "—"
+end)
+
+-- RightShift to toggle on PC
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        Main.Visible = not Main.Visible
+    end
+end)
+
+-- Mobile floating toggle button (bottom-right)
+if IsMobile then
+    local FloatBtn = Instance.new("TextButton")
+    FloatBtn.Size = UDim2.new(0,52,0,52)
+    FloatBtn.Position = UDim2.new(1,-64,1,-80)
+    FloatBtn.BackgroundColor3 = Color3.fromRGB(20,20,20)
+    FloatBtn.Text = "☰"
+    FloatBtn.TextColor3 = Color3.fromRGB(255,255,255)
+    FloatBtn.Font = Enum.Font.GothamBold
+    FloatBtn.TextSize = 22
+    FloatBtn.BorderSizePixel = 0
+    FloatBtn.Parent = GUI
+    Instance.new("UICorner",FloatBtn).CornerRadius = UDim.new(0,26)
+
+    FloatBtn.MouseButton1Click:Connect(function()
+        Main.Visible = not Main.Visible
+    end)
+end
+
+-- ============================================================
+-- GUI COMPONENTS
+-- ============================================================
+local function addHeader(text)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1,-8,0,math.floor(22*SCALE))
+    f.BackgroundTransparency = 1
+    f.Parent = Scroll
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1,0,1,0)
+    l.BackgroundTransparency = 1
+    l.Text = "— "..text.." —"
+    l.TextColor3 = Color3.fromRGB(150,150,150)
+    l.Font = Enum.Font.GothamBold
+    l.TextSize = FSIZE_S
+    l.Parent = f
+end
+
+local function addToggle(label, cfg, key)
+    local Row = Instance.new("Frame")
+    Row.Size = UDim2.new(1,-8,0,ROW_H)
+    Row.BackgroundColor3 = Color3.fromRGB(22,22,22)
+    Row.BorderSizePixel = 0
+    Row.Parent = Scroll
+    Instance.new("UICorner",Row).CornerRadius = UDim.new(0,5)
+
+    local L = Instance.new("TextLabel")
+    L.Size = UDim2.new(0.65,0,1,0)
+    L.Position = UDim2.new(0,10,0,0)
+    L.BackgroundTransparency = 1
+    L.Text = label
+    L.TextColor3 = Color3.fromRGB(210,210,210)
+    L.Font = Enum.Font.Gotham
+    L.TextSize = FSIZE_L
+    L.TextXAlignment = Enum.TextXAlignment.Left
+    L.Parent = Row
+
+    local BtnW = math.floor(52*SCALE)
+    local BtnH = math.floor(26*SCALE)
+    local Btn = Instance.new("TextButton")
+    Btn.Size = UDim2.new(0,BtnW,0,BtnH)
+    Btn.Position = UDim2.new(1,-(BtnW+8),0.5,-BtnH/2)
+    Btn.BackgroundColor3 = cfg[key] and Color3.fromRGB(255,255,255) or Color3.fromRGB(45,45,45)
+    Btn.Text = cfg[key] and "ON" or "OFF"
+    Btn.TextColor3 = cfg[key] and Color3.fromRGB(0,0,0) or Color3.fromRGB(180,180,180)
+    Btn.Font = Enum.Font.GothamBold
+    Btn.TextSize = FSIZE_S
+    Btn.BorderSizePixel = 0
+    Btn.Parent = Row
+    Instance.new("UICorner",Btn).CornerRadius = UDim.new(0,5)
+
+    local function refresh()
+        Btn.BackgroundColor3 = cfg[key] and Color3.fromRGB(255,255,255) or Color3.fromRGB(45,45,45)
+        Btn.Text = cfg[key] and "ON" or "OFF"
+        Btn.TextColor3 = cfg[key] and Color3.fromRGB(0,0,0) or Color3.fromRGB(180,180,180)
+    end
+
+    Btn.MouseButton1Click:Connect(function()
+        cfg[key] = not cfg[key]
+        refresh()
+    end)
+end
+
+local function addSlider(label, cfg, key, mn, mx)
+    local Row = Instance.new("Frame")
+    Row.Size = UDim2.new(1,-8,0,math.floor(50*SCALE))
+    Row.BackgroundColor3 = Color3.fromRGB(22,22,22)
+    Row.BorderSizePixel = 0
+    Row.Parent = Scroll
+    Instance.new("UICorner",Row).CornerRadius = UDim.new(0,5)
+
+    local L = Instance.new("TextLabel")
+    L.Size = UDim2.new(1,-10,0,math.floor(18*SCALE))
+    L.Position = UDim2.new(0,10,0,4)
+    L.BackgroundTransparency = 1
+    L.Text = label..": "..cfg[key]
+    L.TextColor3 = Color3.fromRGB(200,200,200)
+    L.Font = Enum.Font.Gotham
+    L.TextSize = FSIZE_S
+    L.TextXAlignment = Enum.TextXAlignment.Left
+    L.Parent = Row
+
+    local Track = Instance.new("Frame")
+    Track.Size = UDim2.new(1,-20,0,math.floor(8*SCALE))
+    Track.Position = UDim2.new(0,10,1,-math.floor(14*SCALE))
+    Track.BackgroundColor3 = Color3.fromRGB(50,50,50)
+    Track.BorderSizePixel = 0
+    Track.Parent = Row
+    Instance.new("UICorner",Track).CornerRadius = UDim.new(0,4)
+
+    local Fill = Instance.new("Frame")
+    Fill.Size = UDim2.new((cfg[key]-mn)/(mx-mn),0,1,0)
+    Fill.BackgroundColor3 = Color3.fromRGB(255,255,255)
+    Fill.BorderSizePixel = 0
+    Fill.Parent = Track
+    Instance.new("UICorner",Fill).CornerRadius = UDim.new(0,4)
+
+    local dragging = false
+
+    local function applyDrag(inputPos)
+        local ts = Track.AbsolutePosition.X
+        local te = ts + Track.AbsoluteSize.X
+        local t  = math.clamp((inputPos - ts)/(te - ts), 0, 1)
+        local v  = math.floor(mn + t*(mx-mn))
+        cfg[key] = v
+        Fill.Size = UDim2.new(t,0,1,0)
+        L.Text = label..": "..v
+    end
+
+    -- PC
+    Track.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging=true end
+    end)
+    UserInputService.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging=false end
+    end)
+    RunService.RenderStepped:Connect(function()
+        if dragging then applyDrag(UserInputService:GetMouseLocation().X) end
+    end)
+
+    -- Mobile
+    Track.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            applyDrag(i.Position.X)
+        end
+    end)
+    Track.InputChanged:Connect(function(i)
+        if dragging and i.UserInputType == Enum.UserInputType.Touch then
+            applyDrag(i.Position.X)
+        end
+    end)
+    Track.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.Touch then dragging=false end
+    end)
+end
+
+-- Build sections
+addHeader("AIM ASSIST")
+addToggle("Aim Assist",      Config.AimAssist, "Enabled")
+addToggle("Team Check",      Config.AimAssist, "TeamCheck")
+addToggle("Visible Check",   Config.AimAssist, "VisibleCheck")
+addSlider("FOV",             Config.AimAssist, "FOV", 10, 400)
+
+addHeader("SILENT AURA")
+addToggle("Silent Aura",     Config.SilentAura, "Enabled")
+addToggle("Team Check",      Config.SilentAura, "TeamCheck")
+addSlider("Radius",          Config.SilentAura, "Radius", 1, 50)
+addSlider("Hit Chance %",    Config.SilentAura, "HitChance", 1, 100)
+
+addHeader("ESP")
+addToggle("ESP",             Config.ESP, "Enabled")
+addToggle("Boxes",           Config.ESP, "Boxes")
+addToggle("Names",           Config.ESP, "Names")
+addToggle("Distance",        Config.ESP, "Distance")
+addToggle("Health",          Config.ESP, "Health")
+
+addHeader("TRACERS")
+addToggle("Tracers",         Config.Tracers, "Enabled")
+
+addHeader("VISUALS")
+addToggle("Crosshair",       Config.Visuals, "CrosshairEnabled")
+addToggle("FOV Circle",      Config.Visuals, "FOVCircle")
+
+if IsMobile then
+    addHeader("MOBILE")
+    addToggle("Auto-Aim On Touch", Config.MobileAim, "AutoAimOnTouch")
+end
+
+-- ============================================================
+-- PLAYER TRACKING
+-- ============================================================
+for _, p in ipairs(Players:GetPlayers()) do
+    if p ~= LocalPlayer then createESP(p) end
+end
+Players.PlayerAdded:Connect(function(p)
+    if p ~= LocalPlayer then createESP(p) end
+end)
+Players.PlayerRemoving:Connect(removeESP)
+
+-- ============================================================
+-- MAIN LOOPS
+-- ============================================================
+RunService.RenderStepped:Connect(function()
+    updateESP()
+    updateVisuals()
+    runAimAssist()
+end)
+
+RunService.Heartbeat:Connect(runSilentAura)
